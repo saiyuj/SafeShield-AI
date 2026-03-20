@@ -1,6 +1,7 @@
 import { Tabs } from 'expo-router';
 import { View, Text, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const SOSIcon = ({ focused }) => (
   <View style={{
@@ -17,6 +18,8 @@ const SOSIcon = ({ focused }) => (
 );
 
 export default function TabLayout() {
+  const insets = useSafeAreaInsets();
+
   return (
     <Tabs
       screenOptions={{
@@ -26,8 +29,8 @@ export default function TabLayout() {
           backgroundColor: '#111111',
           borderTopColor: '#222',
           borderTopWidth: 1,
-          height: Platform.OS === 'android' ? 72 : 88,
-          paddingBottom: Platform.OS === 'android' ? 10 : 28,
+          height: 60 + insets.bottom,
+          paddingBottom: insets.bottom,
           paddingTop: 8,
           position: 'absolute',
           bottom: 0,
