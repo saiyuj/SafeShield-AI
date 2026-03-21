@@ -14,6 +14,11 @@ export default function ProtectScreen() {
     { icon: 'call-outline', title: 'Fake Call', desc: 'Escape danger with fake call', color: '#30B0C7', screen: 'screens/fakecall' },
     { icon: 'calculator-outline', title: 'Disguise Mode', desc: 'App looks like calculator', color: '#FFE033', screen: 'screens/disguise' },
     { icon: 'flash-outline', title: 'Safety Features', desc: 'Shake SOS, location, night mode', color: '#FF3B30', screen: 'screens/safetyfeatures' },
+    { icon: 'happy-outline', title: 'SafeShield Junior', desc: 'Children safety system', color: '#FF2D55', screen: 'screens/junior' },
+    { icon: 'chatbubble-ellipses-outline', title: 'AI Support Chat', desc: 'Emotional support 24/7', color: '#34C759', screen: 'screens/aichat' },
+    { icon: 'map-outline', title: 'Safety Map', desc: 'Community danger zones', color: '#FF9500', screen: 'screens/safetymap' },
+    { icon: 'heart-outline', title: 'Health & Safety', desc: 'Period tracker & medical SOS', color: '#FF2D55', screen: 'screens/health' },
+    { icon: 'person-outline', title: 'Fake Detector', desc: 'Detect fake social profiles', color: '#5856D6', screen: 'screens/fakedetector' },
   ];
 
   return (
