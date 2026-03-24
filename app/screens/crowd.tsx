@@ -1,137 +1,182 @@
 import { useState, useRef, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, ScrollView, SafeAreaView, Animated, Alert } from 'react-native';
-import { Audio } from 'expo-av';
+import { StyleSheet, Text, View, TouchableOpacity, ScrollView, SafeAreaView, Alert, Animated, Vibration } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
+import { Audio } from 'expo-av';
 import axios from 'axios';
 
-const API_URL = "http://192.168.29.145:5000";
+const API_URL = 'http://192.168.29.145:5000';
 
 export default function CrowdScreen() {
+  const router = useRouter();
   const [isScanning, setIsScanning] = useState(false);
-  const [safetyScore, setSafetyScore] = useState(null);
-  const [history, setHistory] = useState([]);
+  const [result, setResult] = useState(null);
+  const [countdown, setCountdown] = useState(5);
   const recordingRef = useRef(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  const radarAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     if (isScanning) {
-      Animated.loop(
-        Animated.sequence([
-          Animated.timing(pulseAnim, { toValue: 1.2, duration: 700, useNativeDriver: true }),
-          Animated.timing(pulseAnim, { toValue: 1, duration: 700, useNativeDriver: true }),
-        ])
-      ).start();
+      Animated.loop(Animated.sequence([
+        Animated.timing(pulseAnim, { toValue: 1.15, duration: 500, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1, duration: 500, useNativeDriver: true }),
+      ])).start();
+      Animated.loop(Animated.timing(radarAnim, { toValue: 1, duration: 2000, useNativeDriver: true })).start();
     } else {
-      pulseAnim.stopAnimation();
-      pulseAnim.setValue(1);
+      pulseAnim.stopAnimation(); pulseAnim.setValue(1);
+      radarAnim.stopAnimation(); radarAnim.setValue(0);
     }
   }, [isScanning]);
 
-  const startScan = async () => {
+  const scan = async () => {
     try {
-      setIsScanning(true);
-      setSafetyScore(null);
-      const permission = await Audio.requestPermissionsAsync();
-      if (!permission.granted) { Alert.alert('Permission Required', 'Allow microphone access.'); setIsScanning(false); return; }
+      const perm = await Audio.requestPermissionsAsync();
+      if (!perm.granted) { Alert.alert('Permission Required', 'Allow microphone access.'); return; }
       await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
       const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
       recordingRef.current = recording;
-      await new Promise(r => setTimeout(r, 5000));
-      await recording.stopAndUnloadAsync();
+      setIsScanning(true);
+      setResult(null);
+      setCountdown(5);
+
+      for (let i = 4; i >= 0; i--) {
+        await new Promise(r => setTimeout(r, 1000));
+        setCountdown(i);
+      }
+
+      setIsScanning(false);
+
+      try { await recording.stopAndUnloadAsync(); } catch (e) {}
       const uri = recording.getURI();
+      if (!uri) return;
+
       const formData = new FormData();
-      formData.append('file', { uri, type: 'audio/wav', name: 'crowd.wav' });
-      const response = await axios.post(`${API_URL}/predict`, formData, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 15000 });
-      const data = response.data;
-      const score = Math.round(100 - data.confidence.distress);
-      let zone, color, desc;
-      if (score >= 70) { zone = 'SAFE ZONE'; color = '#34C759'; desc = 'Your surroundings sound safe'; }
-      else if (score >= 40) { zone = 'CAUTION ZONE'; color = '#FFE033'; desc = 'Some unusual sounds detected'; }
-      else { zone = 'DANGER ZONE'; color = '#FF3B30'; desc = 'High distress level detected!'; }
-      const result = { score, zone, color, desc, time: new Date().toLocaleTimeString() };
-      setSafetyScore(result);
-      setHistory(prev => [result, ...prev.slice(0, 4)]);
-      if (score < 40) Alert.alert('Danger Zone!', 'High distress sounds detected. Move to a safer location!', [{ text: 'OK' }]);
+      formData.append('file', { uri, type: 'audio/wav', name: 'crowd.wav' } as any);
+
+      const res = await axios.post(`${API_URL}/predict`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }, timeout: 15000
+      });
+
+      const distress = res.data.confidence.distress;
+      const safeScore = Math.round(100 - distress);
+      let label, color, advice, icon;
+
+      if (safeScore >= 75) {
+        label = 'SAFE AREA'; color = '#34C759'; icon = 'shield-checkmark-outline';
+        advice = 'Environment sounds calm and safe. No immediate threats detected.';
+      } else if (safeScore >= 45) {
+        label = 'MODERATE RISK'; color = '#FF9500'; icon = 'warning-outline';
+        advice = 'Some concerning sounds detected. Stay alert and aware of surroundings.';
+        Vibration.vibrate(200);
+      } else {
+        label = 'HIGH RISK'; color = '#FF3B30'; icon = 'alert-circle-outline';
+        advice = 'Dangerous sounds detected! Move to a safer location immediately.';
+        Vibration.vibrate([300, 100, 300]);
+        Alert.alert('⚠️ UNSAFE AREA DETECTED!', 'High risk environment detected!\nMove to a safer location now!', [{ text: 'OK' }]);
+      }
+
+      setResult({ safeScore, distress, label, color, advice, icon });
     } catch (e) {
-      Alert.alert('Error', 'Could not analyze surroundings.');
-    } finally { setIsScanning(false); }
+      setIsScanning(false);
+      Alert.alert('Connection Error', 'Cannot reach SafeShield server.\nMake sure Flask server is running at:\n192.168.29.145:5000');
+    }
   };
+
+  const radarRotate = radarAnim.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
 
   return (
     <SafeAreaView style={s.container}>
       <View style={s.header}>
-        <Text style={s.headerTitle}>Crowd Safety Score</Text>
-        <Text style={s.headerSub}>AI analyzes your surroundings in real time</Text>
+        <TouchableOpacity onPress={() => router.back()} style={s.backBtn}>
+          <Ionicons name="chevron-back" size={24} color="white" />
+        </TouchableOpacity>
+        <Text style={s.headerTitle}>Crowd Safety Scanner</Text>
+        <View style={{ width: 40 }} />
       </View>
-      <ScrollView contentContainerStyle={s.scroll}>
 
-        <View style={s.mainCard}>
-          <Animated.View style={[s.scoreOrb, { transform: [{ scale: pulseAnim }], borderColor: safetyScore ? safetyScore.color + '66' : '#FFE03344' }]}>
-            <View style={s.scoreOrbInner}>
-              {isScanning ? (
-                <>
-                  <Ionicons name="radio-outline" size={40} color="#FFE033" />
-                  <Text style={s.scanningLabel}>Scanning...</Text>
-                </>
-              ) : safetyScore ? (
-                <>
-                  <Ionicons name={safetyScore.score >= 70 ? 'checkmark-circle-outline' : safetyScore.score >= 40 ? 'warning-outline' : 'alert-circle-outline'} size={36} color={safetyScore.color} />
-                  <Text style={[s.scoreNumber, { color: safetyScore.color }]}>{safetyScore.score}</Text>
-                  <Text style={s.scoreMax}>/ 100</Text>
-                </>
-              ) : (
-                <>
-                  <Ionicons name="help-circle-outline" size={40} color="#444" />
-                  <Text style={s.scoreUnknown}>--</Text>
-                  <Text style={s.scoreMax}>/ 100</Text>
-                </>
-              )}
-            </View>
+      <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
+
+        <View style={s.radarCard}>
+          {/* Radar rings */}
+          {[130, 100, 70].map((size, i) => (
+            <View key={i} style={[s.radarRing, { width: size, height: size, borderRadius: size/2, opacity: 0.2 + i*0.1, borderColor: isScanning ? '#5856D6' : '#FFE033' }]} />
+          ))}
+
+          {/* Rotating radar line */}
+          {isScanning && (
+            <Animated.View style={[s.radarLine, { transform: [{ rotate: radarRotate }] }]} />
+          )}
+
+          <Animated.View style={[s.radarCenter, { transform: [{ scale: pulseAnim }] }]}>
+            <Ionicons name={isScanning ? 'radio-outline' : 'people-outline'} size={36} color={isScanning ? '#5856D6' : '#FFE033'} />
           </Animated.View>
-          <Text style={[s.zoneText, { color: safetyScore ? safetyScore.color : '#555' }]}>
-            {isScanning ? 'ANALYZING...' : safetyScore ? safetyScore.zone : 'UNKNOWN'}
+
+          <Text style={[s.radarStatus, { color: isScanning ? '#5856D6' : '#FFE033' }]}>
+            {isScanning ? `Scanning... ${countdown}s` : 'Ready to Scan'}
           </Text>
-          <Text style={s.zoneDesc}>{isScanning ? 'Listening for 5 seconds' : safetyScore ? safetyScore.desc : 'Start scan to analyze safety'}</Text>
+          <Text style={s.radarSub}>
+            {isScanning ? 'AI analyzing surrounding sounds...' : 'Analyzes 5 seconds of ambient audio'}
+          </Text>
         </View>
 
-        <TouchableOpacity style={[s.btn, isScanning && s.btnDisabled]} onPress={startScan} disabled={isScanning} activeOpacity={0.8}>
-          <Ionicons name="search-outline" size={22} color={isScanning ? '#666' : '#111'} />
-          <Text style={[s.btnText, isScanning && { color: '#666' }]}>{isScanning ? 'Scanning... (5s)' : 'Start Safety Scan'}</Text>
-        </TouchableOpacity>
+        {!isScanning && (
+          <TouchableOpacity style={s.scanBtn} onPress={scan} activeOpacity={0.85}>
+            <Ionicons name="scan-outline" size={22} color="#111" />
+            <Text style={s.scanBtnText}>Start Safety Scan</Text>
+          </TouchableOpacity>
+        )}
 
-        <View style={s.zonesCard}>
-          <Text style={s.zonesTitle}>SAFETY ZONES</Text>
-          {[
-            { zone: 'Safe Zone', range: '70-100', color: '#34C759', desc: 'Normal surroundings, low risk' },
-            { zone: 'Caution Zone', range: '40-69', color: '#FFE033', desc: 'Some unusual sounds detected' },
-            { zone: 'Danger Zone', range: '0-39', color: '#FF3B30', desc: 'High distress level detected!' },
-          ].map((item, i) => (
-            <View key={i} style={s.zoneRow}>
-              <View style={[s.zoneLine, { backgroundColor: item.color }]} />
-              <View style={s.zoneInfo}>
-                <Text style={[s.zoneName, { color: item.color }]}>{item.zone}</Text>
-                <Text style={s.zoneDescText}>{item.desc}</Text>
+        {isScanning && (
+          <View style={s.scanningRow}>
+            <Ionicons name="radio-outline" size={18} color="#5856D6" />
+            <Text style={s.scanningText}>Scanning environment...</Text>
+          </View>
+        )}
+
+        {result && (
+          <View style={[s.resultCard, { borderColor: result.color + '44' }]}>
+            <Ionicons name={result.icon as any} size={52} color={result.color} />
+            <Text style={[s.resultLabel, { color: result.color }]}>{result.label}</Text>
+
+            {/* Score gauge */}
+            <View style={s.gaugeContainer}>
+              <Text style={s.gaugeLabel}>Safety Score</Text>
+              <View style={s.gaugeTrack}>
+                <View style={[s.gaugeFill, { width: `${result.safeScore}%`, backgroundColor: result.color }]} />
               </View>
-              <Text style={[s.zoneRange, { color: item.color }]}>{item.range}</Text>
+              <Text style={[s.gaugeScore, { color: result.color }]}>{result.safeScore}/100</Text>
+            </View>
+
+            <Text style={s.resultAdvice}>{result.advice}</Text>
+
+            <View style={s.resultStats}>
+              <View style={s.resultStat}>
+                <Text style={[s.resultStatVal, { color: '#34C759' }]}>{result.safeScore}%</Text>
+                <Text style={s.resultStatLabel}>Safe Score</Text>
+              </View>
+              <View style={s.resultStat}>
+                <Text style={[s.resultStatVal, { color: '#FF3B30' }]}>{result.distress}%</Text>
+                <Text style={s.resultStatLabel}>Risk Score</Text>
+              </View>
+            </View>
+
+            <TouchableOpacity style={s.rescanBtn} onPress={scan} activeOpacity={0.85}>
+              <Ionicons name="refresh-outline" size={18} color="#5856D6" />
+              <Text style={s.rescanBtnText}>Scan Again</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        <View style={s.tipsCard}>
+          <Text style={s.tipsTitle}>SAFETY TIPS</Text>
+          {['Stay in well-lit and crowded areas', 'Trust your instincts if something feels wrong', 'Keep emergency contacts on speed dial', 'Share your location with trusted contacts'].map((tip, i) => (
+            <View key={i} style={s.tipRow}>
+              <Ionicons name="checkmark-circle-outline" size={16} color="#FFE033" />
+              <Text style={s.tipText}>{tip}</Text>
             </View>
           ))}
         </View>
-
-        {history.length > 0 && (
-          <View style={s.historyCard}>
-            <Text style={s.historyTitle}>SCAN HISTORY</Text>
-            {history.map((item, i) => (
-              <View key={i} style={s.historyRow}>
-                <Ionicons name={item.score >= 70 ? 'checkmark-circle-outline' : item.score >= 40 ? 'warning-outline' : 'alert-circle-outline'} size={24} color={item.color} />
-                <View style={s.historyInfo}>
-                  <Text style={[s.historyZone, { color: item.color }]}>{item.zone}</Text>
-                  <Text style={s.historyTime}>{item.time}</Text>
-                </View>
-                <Text style={[s.historyScore, { color: item.color }]}>{item.score}</Text>
-              </View>
-            ))}
-          </View>
-        )}
 
       </ScrollView>
     </SafeAreaView>
@@ -140,35 +185,36 @@ export default function CrowdScreen() {
 
 const s = StyleSheet.create({
   container: { flex:1, backgroundColor:'#111111' },
-  header: { padding:20, borderBottomWidth:1, borderBottomColor:'#222' },
-  headerTitle: { color:'white', fontSize:22, fontWeight:'900' },
-  headerSub: { color:'#555', fontSize:13, marginTop:4 },
-  scroll: { padding:20, paddingBottom:120 },
-  mainCard: { backgroundColor:'#1C1C1E', borderRadius:28, padding:30, alignItems:'center', marginBottom:20, borderWidth:1, borderColor:'#2C2C2E' },
-  scoreOrb: { width:160, height:160, borderRadius:80, backgroundColor:'rgba(255,224,51,0.05)', justifyContent:'center', alignItems:'center', borderWidth:2, marginBottom:16 },
-  scoreOrbInner: { alignItems:'center' },
-  scanningLabel: { color:'#FFE033', fontSize:13, fontWeight:'700', marginTop:8 },
-  scoreNumber: { fontSize:52, fontWeight:'900' },
-  scoreMax: { color:'#555', fontSize:14 },
-  scoreUnknown: { color:'#444', fontSize:52, fontWeight:'900' },
-  zoneText: { fontSize:18, fontWeight:'900', letterSpacing:1, marginBottom:6 },
-  zoneDesc: { color:'#555', fontSize:13, textAlign:'center' },
-  btn: { backgroundColor:'#FFE033', borderRadius:18, padding:18, flexDirection:'row', alignItems:'center', justifyContent:'center', gap:10, marginBottom:20 },
-  btnDisabled: { backgroundColor:'#1C1C1E', borderWidth:1, borderColor:'#333' },
-  btnText: { color:'#111', fontSize:17, fontWeight:'800' },
-  zonesCard: { backgroundColor:'#1C1C1E', borderRadius:20, padding:20, marginBottom:20, borderWidth:1, borderColor:'#2C2C2E' },
-  zonesTitle: { color:'#555', fontSize:11, fontWeight:'700', letterSpacing:1.5, marginBottom:16 },
-  zoneRow: { flexDirection:'row', alignItems:'center', gap:12, marginBottom:16 },
-  zoneLine: { width:4, height:44, borderRadius:2 },
-  zoneInfo: { flex:1 },
-  zoneName: { fontSize:14, fontWeight:'800' },
-  zoneDescText: { color:'#555', fontSize:12, marginTop:2 },
-  zoneRange: { fontSize:16, fontWeight:'900' },
-  historyCard: { backgroundColor:'#1C1C1E', borderRadius:20, padding:20, borderWidth:1, borderColor:'#2C2C2E' },
-  historyTitle: { color:'#555', fontSize:11, fontWeight:'700', letterSpacing:1.5, marginBottom:14 },
-  historyRow: { flexDirection:'row', alignItems:'center', gap:12, marginBottom:12 },
-  historyInfo: { flex:1 },
-  historyZone: { fontSize:13, fontWeight:'700' },
-  historyTime: { color:'#555', fontSize:12, marginTop:2 },
-  historyScore: { fontSize:22, fontWeight:'900' },
+  header: { flexDirection:'row', alignItems:'center', justifyContent:'space-between', padding:16, borderBottomWidth:1, borderBottomColor:'#222' },
+  backBtn: { width:40, height:40, borderRadius:20, backgroundColor:'#1C1C1E', justifyContent:'center', alignItems:'center' },
+  headerTitle: { color:'white', fontSize:17, fontWeight:'800' },
+  scroll: { padding:16, paddingBottom:100 },
+  radarCard: { backgroundColor:'#1C1C1E', borderRadius:28, padding:28, marginBottom:16, alignItems:'center', borderWidth:1, borderColor:'#2C2C2E', minHeight:280 },
+  radarRing: { position:'absolute', borderWidth:1 },
+  radarLine: { position:'absolute', width:2, height:65, backgroundColor:'rgba(88,86,214,0.6)', bottom:'50%', left:'50%', transformOrigin:'bottom' },
+  radarCenter: { width:80, height:80, borderRadius:40, backgroundColor:'rgba(255,224,51,0.15)', justifyContent:'center', alignItems:'center', marginBottom:16 },
+  radarStatus: { fontSize:18, fontWeight:'800', marginBottom:6 },
+  radarSub: { color:'#555', fontSize:12, textAlign:'center' },
+  scanBtn: { backgroundColor:'#FFE033', borderRadius:18, padding:18, flexDirection:'row', alignItems:'center', justifyContent:'center', gap:10, marginBottom:16 },
+  scanBtnText: { color:'#111', fontSize:16, fontWeight:'800' },
+  scanningRow: { flexDirection:'row', alignItems:'center', justifyContent:'center', gap:10, padding:16 },
+  scanningText: { color:'#5856D6', fontSize:14, fontWeight:'600' },
+  resultCard: { backgroundColor:'#1C1C1E', borderRadius:22, padding:20, marginBottom:16, alignItems:'center', borderWidth:1.5 },
+  resultLabel: { fontSize:22, fontWeight:'900', letterSpacing:1, marginTop:8, marginBottom:16 },
+  gaugeContainer: { width:'100%', marginBottom:16 },
+  gaugeLabel: { color:'#666', fontSize:11, marginBottom:6 },
+  gaugeTrack: { height:12, backgroundColor:'#111111', borderRadius:6, overflow:'hidden', marginBottom:4 },
+  gaugeFill: { height:'100%', borderRadius:6 },
+  gaugeScore: { fontSize:14, fontWeight:'700', textAlign:'right' },
+  resultAdvice: { color:'#aaa', fontSize:13, textAlign:'center', lineHeight:20, marginBottom:16 },
+  resultStats: { flexDirection:'row', gap:20, marginBottom:16 },
+  resultStat: { alignItems:'center' },
+  resultStatVal: { fontSize:24, fontWeight:'900' },
+  resultStatLabel: { color:'#555', fontSize:10, marginTop:2 },
+  rescanBtn: { flexDirection:'row', alignItems:'center', gap:8, padding:12, backgroundColor:'#111111', borderRadius:12, borderWidth:1, borderColor:'#5856D644' },
+  rescanBtnText: { color:'#5856D6', fontSize:14, fontWeight:'700' },
+  tipsCard: { backgroundColor:'#1C1C1E', borderRadius:20, padding:18, borderWidth:1, borderColor:'#2C2C2E' },
+  tipsTitle: { color:'#555', fontSize:11, fontWeight:'700', letterSpacing:1.5, marginBottom:12 },
+  tipRow: { flexDirection:'row', alignItems:'center', gap:10, marginBottom:10 },
+  tipText: { color:'#888', fontSize:13, flex:1 },
 });

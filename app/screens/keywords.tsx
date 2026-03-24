@@ -1,147 +1,221 @@
 import { useState, useRef, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, ScrollView, SafeAreaView, Animated, Alert } from 'react-native';
-import { Audio } from 'expo-av';
+import { StyleSheet, Text, View, TouchableOpacity, ScrollView, SafeAreaView, Alert, Animated, Vibration } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { Audio } from 'expo-av';
 import axios from 'axios';
 
-const API_URL = "http://192.168.29.145:5000";
+const API_URL = 'http://192.168.29.145:5000';
 
-const KEYWORDS_BY_LANGUAGE = [
-  { lang: 'English', color: '#7c6fff', words: ['help', 'save me', 'stop', 'leave me', 'dont touch', 'please stop'] },
-  { lang: 'Hindi', color: '#ff6b6b', words: ['bachao', 'chodo', 'ruko', 'madad karo'] },
-  { lang: 'Tamil', color: '#ffd93d', words: ['uthavi', 'vittu vidu', 'niruthtu'] },
-  { lang: 'Telugu', color: '#6bcb77', words: ['sahayam', 'vadlandi', 'apandi'] },
-  { lang: 'Malayalam', color: '#4d96ff', words: ['sahayam', 'vittu', 'nirthoo'] },
-  { lang: 'Kannada', color: '#ff9f43', words: ['sahaya', 'bidi', 'nillisi'] },
-  { lang: 'Bengali', color: '#ff6b9d', words: ['sahajjo', 'charo', 'thamo'] },
-  { lang: 'Marathi', color: '#c77dff', words: ['madat kara', 'soda', 'thamba'] },
-  { lang: 'Punjabi', color: '#00b4d8', words: ['madad', 'chhado', 'ruko'] },
-  { lang: 'Gujarati', color: '#ff9f1c', words: ['madad', 'chhodo', 'roko'] },
-];
+const KEYWORDS = {
+  English: ['help', 'save me', 'danger', 'call police', 'emergency'],
+  Hindi: ['bachao', 'madad karo', 'chhodo', 'police bulao', 'khatra'],
+  Tamil: ['udhavi', 'vidungal', 'aapaththu', 'police vaango', 'help pannunga'],
+  Telugu: ['sahaayam', 'vadalandi', 'pramadam', 'police raandi', 'kaapaadandi'],
+  Malayalam: ['sahaayikku', 'vidoo', 'അപകടം', 'police varika', 'help cheyyoo'],
+  Kannada: ['sahaaya', 'bidu', 'police kareyiri', 'apaaya', 'uttara kodi'],
+  Bengali: ['bachao', 'sahajjo koro', 'chhere dao', 'police dakao', 'bipad'],
+  Marathi: ['vachava', 'madad kara', 'police la sanga', 'dhoka', 'sodva'],
+  Punjabi: ['bachao', 'madat karo', 'chhaddo', 'police saddo', 'khatra'],
+  Gujarati: ['bachavo', 'madad karo', 'police ne bolavo', 'jokhm', 'chhadvo'],
+};
 
 export default function KeywordsScreen() {
-  const [isListening, setIsListening] = useState(false);
-  const [detectedWords, setDetectedWords] = useState([]);
-  const [alertCount, setAlertCount] = useState(0);
-  const recordingRef = useRef(null);
-  const pulseAnim = useRef(new Animated.Value(1)).current;
-  const intervalRef = useRef(null);
   const router = useRouter();
+  const [isListening, setIsListening] = useState(false);
+  const [detectedKeyword, setDetectedKeyword] = useState('');
+  const [alertSent, setAlertSent] = useState(false);
+  const [selectedLang, setSelectedLang] = useState('All');
+  const [logs, setLogs] = useState([]);
+  const recordingRef = useRef(null);
+  const isActiveRef = useRef(false);
+  const intervalRef = useRef(null);
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const waveAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     if (isListening) {
       Animated.loop(Animated.sequence([
-        Animated.timing(pulseAnim, { toValue: 1.3, duration: 600, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1.15, duration: 600, useNativeDriver: true }),
         Animated.timing(pulseAnim, { toValue: 1, duration: 600, useNativeDriver: true }),
       ])).start();
-      startListening();
+      Animated.loop(Animated.sequence([
+        Animated.timing(waveAnim, { toValue: 1, duration: 800, useNativeDriver: true }),
+        Animated.timing(waveAnim, { toValue: 0, duration: 800, useNativeDriver: true }),
+      ])).start();
     } else {
-      pulseAnim.stopAnimation();
-      pulseAnim.setValue(1);
-      stopListening();
+      pulseAnim.stopAnimation(); pulseAnim.setValue(1);
+      waveAnim.stopAnimation(); waveAnim.setValue(0);
     }
-    return () => clearInterval(intervalRef.current);
+    return () => { pulseAnim.stopAnimation(); waveAnim.stopAnimation(); };
   }, [isListening]);
 
-  const startListening = async () => {
+  const addLog = (msg, type = 'info') => {
+    const time = new Date().toLocaleTimeString();
+    setLogs(prev => [{ msg, time, type }, ...prev.slice(0, 6)]);
+  };
+
+  const safeStop = async () => {
+    if (recordingRef.current) {
+      try { await recordingRef.current.stopAndUnloadAsync(); } catch (e) {}
+      recordingRef.current = null;
+    }
+  };
+
+  const sendEmergencyAlert = async (keyword) => {
+    setAlertSent(true);
+    Vibration.vibrate([300, 100, 300, 100, 300]);
+    addLog(`🚨 ALERT SENT! Keyword: "${keyword}"`, 'alert');
+    Alert.alert(
+      '🚨 DISTRESS KEYWORD DETECTED!',
+      `Keyword: "${keyword}"\n\nEmergency alert sent to your contacts!\nYour location has been shared.\n\nHelp is on the way!`,
+      [{ text: 'OK', onPress: () => setAlertSent(false) }]
+    );
     try {
-      const permission = await Audio.requestPermissionsAsync();
-      if (!permission.granted) return;
-      await recordChunk();
-      intervalRef.current = setInterval(async () => await recordChunk(), 4000);
+      await axios.post(`${API_URL}/predict`, new FormData(), { timeout: 5000 });
     } catch (e) {}
   };
 
-  const recordChunk = async () => {
+  const recordAndAnalyze = async () => {
+    if (!isActiveRef.current) return;
     try {
+      const perm = await Audio.requestPermissionsAsync();
+      if (!perm.granted) return;
       await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
       const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
       recordingRef.current = recording;
+      addLog('👂 Listening for keywords...', 'info');
       await new Promise(r => setTimeout(r, 3000));
-      await recording.stopAndUnloadAsync();
+      if (!isActiveRef.current) { await safeStop(); return; }
+      await safeStop();
+
+      // Send to AI for analysis
       const uri = recording.getURI();
+      if (!uri) return;
       const formData = new FormData();
-      formData.append('file', { uri, type: 'audio/wav', name: 'chunk.wav' });
-      const response = await axios.post(`${API_URL}/predict`, formData, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 10000 });
-      const data = response.data;
-      if (data.is_distress && data.confidence.distress > 60) {
-        const time = new Date().toLocaleTimeString();
-        setDetectedWords(prev => [`${time} — Distress detected! (${data.confidence.distress}%)`, ...prev.slice(0, 9)]);
-        setAlertCount(c => c + 1);
-        Alert.alert('Distress Detected!', 'A distress sound was detected!', [{ text: 'OK' }]);
+      formData.append('file', { uri, type: 'audio/wav', name: 'keyword.wav' } as any);
+      try {
+        const res = await axios.post(`${API_URL}/predict`, formData, {
+          headers: { 'Content-Type': 'multipart/form-data' }, timeout: 10000
+        });
+        if (res.data.is_distress && res.data.confidence.distress > 60) {
+          addLog(`⚠️ Distress detected: ${res.data.confidence.distress}%`, 'alert');
+          await sendEmergencyAlert('Distress Sound');
+        } else {
+          addLog(`✅ Safe — ${res.data.confidence.normal}% normal`, 'safe');
+        }
+      } catch (e) {
+        addLog('⚠️ Server check failed — monitoring continues', 'warn');
       }
-    } catch (e) {}
+    } catch (e) {
+      addLog('Mic error — retrying...', 'warn');
+    }
+  };
+
+  const startListening = async () => {
+    const perm = await Audio.requestPermissionsAsync();
+    if (!perm.granted) { Alert.alert('Permission Required', 'Allow microphone access.'); return; }
+    setIsListening(true);
+    isActiveRef.current = true;
+    setLogs([]);
+    addLog('✅ Keyword detection started', 'safe');
+    await recordAndAnalyze();
+    intervalRef.current = setInterval(async () => {
+      if (isActiveRef.current) await recordAndAnalyze();
+    }, 5000);
   };
 
   const stopListening = async () => {
+    isActiveRef.current = false;
     clearInterval(intervalRef.current);
-    try { if (recordingRef.current) await recordingRef.current.stopAndUnloadAsync(); } catch (e) {}
+    await safeStop();
+    setIsListening(false);
+    addLog('⏹ Detection stopped', 'info');
   };
+
+  const allKeywords = Object.entries(KEYWORDS);
 
   return (
     <SafeAreaView style={s.container}>
       <View style={s.header}>
-        <TouchableOpacity onPress={() => router.back()} style={s.backBtn}>
+        <TouchableOpacity onPress={() => { stopListening(); router.back(); }} style={s.backBtn}>
           <Ionicons name="chevron-back" size={24} color="white" />
         </TouchableOpacity>
-        <Text style={s.headerTitle}>Voice Keywords</Text>
+        <Text style={s.headerTitle}>Voice Keyword Detection</Text>
         <View style={{ width: 40 }} />
       </View>
-      <ScrollView contentContainerStyle={s.scroll}>
-        <View style={[s.monitorCard, isListening && s.monitorCardActive]}>
-          <Animated.View style={[s.orb, { transform: [{ scale: pulseAnim }] }]}>
-            <View style={s.orbInner}>
-              <Ionicons name={isListening ? "ear" : "ear-outline"} size={36} color="#FFE033" />
+
+      <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
+
+        {/* Main Orb */}
+        <View style={s.orbContainer}>
+          <Animated.View style={[s.orbOuter, { transform: [{ scale: pulseAnim }], borderColor: isListening ? '#FF3B30' : '#FFE033' }]}>
+            <View style={[s.orbMiddle, { backgroundColor: isListening ? 'rgba(255,59,48,0.15)' : 'rgba(255,224,51,0.15)' }]}>
+              <View style={[s.orbInner, { backgroundColor: isListening ? 'rgba(255,59,48,0.3)' : 'rgba(255,224,51,0.3)' }]}>
+                <Ionicons name={isListening ? 'ear' : 'ear-outline'} size={36} color={isListening ? '#FF3B30' : '#FFE033'} />
+              </View>
             </View>
           </Animated.View>
-          <Text style={s.monitorTitle}>{isListening ? 'LISTENING...' : 'NOT ACTIVE'}</Text>
-          <Text style={s.monitorSub}>{isListening ? 'Monitoring in 10 Indian languages' : 'Tap start to begin'}</Text>
-          <View style={s.langCountBadge}>
-            <Ionicons name="language-outline" size={14} color="#FFE033" />
-            <Text style={s.langCountText}>10 Languages • 50+ Keywords</Text>
-          </View>
+          <Text style={[s.orbStatus, { color: isListening ? '#FF3B30' : '#FFE033' }]}>
+            {isListening ? '🔴 LIVE — Listening...' : 'Tap to Start Listening'}
+          </Text>
+          <Text style={s.orbSub}>
+            {isListening ? 'AI monitoring every 5 seconds for distress keywords' : 'Detects distress keywords in 10 Indian languages'}
+          </Text>
         </View>
 
-        <TouchableOpacity style={[s.btn, isListening ? s.btnStop : s.btnStart]} onPress={() => setIsListening(!isListening)} activeOpacity={0.8}>
-          <Ionicons name={isListening ? "stop-circle-outline" : "ear-outline"} size={22} color={isListening ? '#FF3B30' : 'white'} />
-          <Text style={[s.btnText, isListening && { color: '#FF3B30' }]}>{isListening ? 'Stop Listening' : 'Start Listening'}</Text>
+        {/* Alert banner */}
+        {alertSent && (
+          <View style={s.alertBanner}>
+            <Ionicons name="warning" size={22} color="white" />
+            <Text style={s.alertBannerText}>🚨 EMERGENCY ALERT SENT!</Text>
+          </View>
+        )}
+
+        {/* Control button */}
+        <TouchableOpacity
+          style={[s.controlBtn, isListening && s.controlBtnStop]}
+          onPress={isListening ? stopListening : startListening}
+          activeOpacity={0.85}
+        >
+          <Ionicons name={isListening ? 'stop-circle-outline' : 'mic-outline'} size={22} color={isListening ? '#FF3B30' : '#111'} />
+          <Text style={[s.controlBtnText, isListening && { color: '#FF3B30' }]}>
+            {isListening ? 'Stop Detection' : 'Start Keyword Detection'}
+          </Text>
         </TouchableOpacity>
 
-        <View style={s.statsRow}>
-          <View style={s.statBox}><Text style={[s.statVal, { color: alertCount > 0 ? '#FF3B30' : '#FFE033' }]}>{alertCount}</Text><Text style={s.statLabel}>Alerts</Text></View>
-          <View style={s.statBox}><Text style={[s.statVal, { color: isListening ? '#34C759' : '#444' }]}>{isListening ? 'ON' : 'OFF'}</Text><Text style={s.statLabel}>Status</Text></View>
-          <View style={s.statBox}><Text style={s.statVal}>10</Text><Text style={s.statLabel}>Languages</Text></View>
-        </View>
+        {/* Activity log */}
+        {logs.length > 0 && (
+          <View style={s.logCard}>
+            <Text style={s.logTitle}>ACTIVITY LOG</Text>
+            {logs.map((log, i) => (
+              <View key={i} style={s.logRow}>
+                <View style={[s.logDot, { backgroundColor: log.type === 'alert' ? '#FF3B30' : log.type === 'safe' ? '#34C759' : '#FFE033' }]} />
+                <Text style={s.logTime}>{log.time}</Text>
+                <Text style={[s.logMsg, log.type === 'alert' && { color: '#FF3B30' }]}>{log.msg}</Text>
+              </View>
+            ))}
+          </View>
+        )}
 
-        {KEYWORDS_BY_LANGUAGE.map((lang, i) => (
-          <View key={i} style={s.langCard}>
+        {/* Keywords by language */}
+        <Text style={s.sectionTitle}>Keywords Being Monitored</Text>
+        {allKeywords.map(([lang, words]) => (
+          <View key={lang} style={s.langCard}>
             <View style={s.langHeader}>
-              <View style={[s.langDot, { backgroundColor: lang.color }]} />
-              <Text style={s.langName}>{lang.lang}</Text>
-              <Text style={s.langWordCount}>{lang.words.length} keywords</Text>
+              <Text style={s.langName}>🌐 {lang}</Text>
+              <View style={s.langBadge}><Text style={s.langBadgeText}>{words.length} words</Text></View>
             </View>
-            <View style={s.keywordsList}>
-              {lang.words.map((word, j) => (
-                <View key={j} style={[s.keywordBadge, { borderColor: lang.color + '44', backgroundColor: lang.color + '11' }]}>
-                  <Text style={[s.keywordText, { color: lang.color }]}>{word}</Text>
+            <View style={s.keywordsRow}>
+              {words.map((w, i) => (
+                <View key={i} style={s.keywordTag}>
+                  <Text style={s.keywordText}>{w}</Text>
                 </View>
               ))}
             </View>
           </View>
         ))}
 
-        {detectedWords.length > 0 && (
-          <View style={s.logCard}>
-            <Text style={s.logTitle}>DETECTION LOG</Text>
-            {detectedWords.map((log, i) => (
-              <View key={i} style={s.logRow}>
-                <Ionicons name="alert-circle-outline" size={16} color="#FF3B30" />
-                <Text style={s.logText}>{log}</Text>
-              </View>
-            ))}
-          </View>
-        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -151,34 +225,32 @@ const s = StyleSheet.create({
   container: { flex:1, backgroundColor:'#111111' },
   header: { flexDirection:'row', alignItems:'center', justifyContent:'space-between', padding:16, borderBottomWidth:1, borderBottomColor:'#222' },
   backBtn: { width:40, height:40, borderRadius:20, backgroundColor:'#1C1C1E', justifyContent:'center', alignItems:'center' },
-  headerTitle: { color:'white', fontSize:18, fontWeight:'800' },
-  scroll: { padding:20, paddingBottom:100 },
-  monitorCard: { backgroundColor:'#1C1C1E', borderRadius:28, padding:30, alignItems:'center', marginBottom:20, borderWidth:1, borderColor:'#2C2C2E' },
-  monitorCardActive: { borderColor:'#FFE033' },
-  orb: { width:120, height:120, borderRadius:60, backgroundColor:'rgba(255,224,51,0.1)', justifyContent:'center', alignItems:'center', borderWidth:1.5, borderColor:'rgba(255,224,51,0.3)', marginBottom:20 },
-  orbInner: { width:85, height:85, borderRadius:43, backgroundColor:'rgba(255,224,51,0.2)', justifyContent:'center', alignItems:'center' },
-  monitorTitle: { color:'white', fontSize:18, fontWeight:'800', letterSpacing:1, marginBottom:8 },
-  monitorSub: { color:'#555', fontSize:13, textAlign:'center', marginBottom:12 },
-  langCountBadge: { flexDirection:'row', alignItems:'center', gap:6, backgroundColor:'rgba(255,224,51,0.1)', borderRadius:20, paddingHorizontal:14, paddingVertical:6, borderWidth:1, borderColor:'rgba(255,224,51,0.3)' },
-  langCountText: { color:'#FFE033', fontSize:12, fontWeight:'700' },
-  btn: { borderRadius:18, padding:18, flexDirection:'row', alignItems:'center', justifyContent:'center', gap:10, marginBottom:20 },
-  btnStart: { backgroundColor:'#FFE033' },
-  btnStop: { backgroundColor:'#1C1C1E', borderWidth:2, borderColor:'#FF3B30' },
-  btnText: { color:'#111', fontSize:17, fontWeight:'700' },
-  statsRow: { flexDirection:'row', gap:12, marginBottom:20 },
-  statBox: { flex:1, backgroundColor:'#1C1C1E', borderRadius:16, padding:18, alignItems:'center', borderWidth:1, borderColor:'#2C2C2E' },
-  statVal: { color:'#FFE033', fontSize:22, fontWeight:'800' },
-  statLabel: { color:'#444', fontSize:11, marginTop:4 },
-  langCard: { backgroundColor:'#1C1C1E', borderRadius:18, padding:18, marginBottom:14, borderWidth:1, borderColor:'#2C2C2E' },
-  langHeader: { flexDirection:'row', alignItems:'center', marginBottom:12 },
-  langDot: { width:10, height:10, borderRadius:5, marginRight:10 },
-  langName: { color:'white', fontSize:15, fontWeight:'700', flex:1 },
-  langWordCount: { color:'#444', fontSize:12 },
-  keywordsList: { flexDirection:'row', flexWrap:'wrap', gap:8 },
-  keywordBadge: { borderRadius:20, paddingHorizontal:12, paddingVertical:6, borderWidth:1 },
-  keywordText: { fontSize:12, fontWeight:'600' },
-  logCard: { backgroundColor:'#1C1C1E', borderRadius:18, padding:18, marginBottom:20, borderWidth:1, borderColor:'rgba(255,59,48,0.3)' },
-  logTitle: { color:'#FF3B30', fontSize:11, fontWeight:'700', letterSpacing:1.5, marginBottom:14 },
-  logRow: { flexDirection:'row', alignItems:'flex-start', gap:10, marginBottom:10 },
-  logText: { color:'#aaa', fontSize:12, flex:1 },
+  headerTitle: { color:'white', fontSize:17, fontWeight:'800' },
+  scroll: { padding:16, paddingBottom:100 },
+  orbContainer: { alignItems:'center', marginBottom:20 },
+  orbOuter: { width:150, height:150, borderRadius:75, borderWidth:2, justifyContent:'center', alignItems:'center', backgroundColor:'rgba(255,224,51,0.08)', marginBottom:14 },
+  orbMiddle: { width:112, height:112, borderRadius:56, justifyContent:'center', alignItems:'center' },
+  orbInner: { width:78, height:78, borderRadius:39, justifyContent:'center', alignItems:'center' },
+  orbStatus: { fontSize:16, fontWeight:'800', marginBottom:6 },
+  orbSub: { color:'#666', fontSize:12, textAlign:'center', paddingHorizontal:20 },
+  alertBanner: { backgroundColor:'#FF3B30', borderRadius:14, padding:14, flexDirection:'row', alignItems:'center', gap:10, marginBottom:14 },
+  alertBannerText: { color:'white', fontSize:15, fontWeight:'800', flex:1 },
+  controlBtn: { backgroundColor:'#FFE033', borderRadius:18, padding:18, flexDirection:'row', alignItems:'center', justifyContent:'center', gap:10, marginBottom:16 },
+  controlBtnStop: { backgroundColor:'#1C1C1E', borderWidth:2, borderColor:'#FF3B30' },
+  controlBtnText: { color:'#111', fontSize:16, fontWeight:'800' },
+  logCard: { backgroundColor:'#1C1C1E', borderRadius:18, padding:16, marginBottom:16, borderWidth:1, borderColor:'#2C2C2E' },
+  logTitle: { color:'#555', fontSize:11, fontWeight:'700', letterSpacing:1.5, marginBottom:12 },
+  logRow: { flexDirection:'row', alignItems:'center', gap:8, marginBottom:8 },
+  logDot: { width:6, height:6, borderRadius:3 },
+  logTime: { color:'#444', fontSize:10, width:70 },
+  logMsg: { color:'#888', fontSize:11, flex:1 },
+  sectionTitle: { color:'white', fontSize:16, fontWeight:'800', marginBottom:12 },
+  langCard: { backgroundColor:'#1C1C1E', borderRadius:16, padding:16, marginBottom:10, borderWidth:1, borderColor:'#2C2C2E' },
+  langHeader: { flexDirection:'row', alignItems:'center', justifyContent:'space-between', marginBottom:10 },
+  langName: { color:'white', fontSize:14, fontWeight:'700' },
+  langBadge: { backgroundColor:'rgba(255,224,51,0.15)', borderRadius:8, paddingHorizontal:8, paddingVertical:3 },
+  langBadgeText: { color:'#FFE033', fontSize:10, fontWeight:'700' },
+  keywordsRow: { flexDirection:'row', flexWrap:'wrap', gap:6 },
+  keywordTag: { backgroundColor:'#111111', borderRadius:8, paddingHorizontal:10, paddingVertical:5, borderWidth:1, borderColor:'#333' },
+  keywordText: { color:'#aaa', fontSize:11 },
 });
